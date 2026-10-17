@@ -1,0 +1,7 @@
+build/
+dist/
+.DS_Store
+__MACOSX/
+*.md
+*.dmg
+*.zip
