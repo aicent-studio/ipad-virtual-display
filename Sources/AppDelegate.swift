@@ -157,13 +157,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let modelMenu = NSMenu()
         let modelTitles = Self.twoColumnTitles(IPadModels.all.map { ($0.name, "\($0.width) × \($0.height)") })
-        for (model, title) in zip(IPadModels.all, modelTitles) {
-            let item = NSMenuItem(title: model.name, action: #selector(selectModel(_:)), keyEquivalent: "")
-            item.attributedTitle = title
-            item.target = self
-            item.representedObject = model.id
-            item.state = model.id == settings.model.id ? .on : .off
-            modelMenu.addItem(item)
+        var titles = modelTitles.makeIterator()
+        for (groupIndex, group) in IPadModels.groups.enumerated() {
+            if groupIndex > 0 {
+                modelMenu.addItem(.separator())
+            }
+            for model in group {
+                let item = NSMenuItem(title: model.name, action: #selector(selectModel(_:)), keyEquivalent: "")
+                item.attributedTitle = titles.next()
+                item.target = self
+                item.representedObject = model.id
+                item.state = model.id == settings.model.id ? .on : .off
+                modelMenu.addItem(item)
+            }
         }
         menu.addItem(screenSpec(submenuItem(title: "iPad 型号", submenu: modelMenu)))
 

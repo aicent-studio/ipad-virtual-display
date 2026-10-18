@@ -20,6 +20,9 @@ final class ScreenController {
     private init() {}
 
     func update(with settings: Settings) {
+        // 新选择覆盖旧选择；旧的同步、唤醒重试不能在新模式应用后再次执行。
+        pendingSync?.invalidate()
+        pendingWakeRebuild?.invalidate()
         // 「不适配」不建虚拟屏。开着「远程时自动镜像」时不远程就是这一档，
         // 平时只有实体屏，窗口不会被拖到看不见的虚拟屏上
         let shouldExist = settings.isEnabled && settings.displayMode != .original
@@ -43,16 +46,41 @@ final class ScreenController {
 
         let sizes = Self.modeSizes(for: settings)
         let refreshRate = Self.preferredRefreshRate(excluding: screen.id)
-        guard screen.setModes(sizes, refreshRate: refreshRate) else {
-            fail("无法应用分辨率")
-            return
-        }
-        lastError = nil
+        prepareModes(on: screen, sizes: sizes, refreshRate: refreshRate,
+                     mirroring: mirroring, handOffAfterCreation: rebuilding && !mirroring,
+                     retriesLeft: 10)
+    }
 
-        if rebuilding && !mirroring {
-            handOff(display: screen.id, size: sizes[0], refreshRate: refreshRate)
-        } else {
-            scheduleSync(display: screen.id, size: sizes[0], refreshRate: refreshRate, mirroring: mirroring, retriesLeft: 10)
+    /// 必须在解除镜像并确认系统已处理后，才能替换正在使用的分辨率列表。
+    /// setModes 本身可能立即切换当前模式，不能等后面的 scheduleSync 再解除镜像。
+    private func prepareModes(on target: VirtualScreen, sizes: [(width: Int, height: Int)],
+                              refreshRate: Double, mirroring: Bool,
+                              handOffAfterCreation: Bool, retriesLeft: Int) {
+        pendingSync = MainRunLoop.after(0.3) { [weak self] in
+            guard let self, self.screen === target else { return }
+            guard self.unmirrorPhysicalDisplays() else {
+                guard retriesLeft > 0 else {
+                    self.tearDown()
+                    self.fail("解除镜像超时，已关闭虚拟屏")
+                    return
+                }
+                self.prepareModes(on: target, sizes: sizes, refreshRate: refreshRate,
+                                  mirroring: mirroring, handOffAfterCreation: handOffAfterCreation,
+                                  retriesLeft: retriesLeft - 1)
+                return
+            }
+            guard target.setModes(sizes, refreshRate: refreshRate) else {
+                self.tearDown()
+                self.fail("无法应用分辨率，已关闭虚拟屏")
+                return
+            }
+            self.lastError = nil
+            if handOffAfterCreation {
+                self.handOff(display: target.id, size: sizes[0], refreshRate: refreshRate)
+            } else {
+                self.scheduleSync(display: target.id, size: sizes[0], refreshRate: refreshRate,
+                                  mirroring: mirroring, retriesLeft: 10)
+            }
         }
     }
 
@@ -81,6 +109,7 @@ final class ScreenController {
 
     func tearDown() {
         pendingSync?.invalidate()
+        pendingWakeRebuild?.invalidate()
         unmirrorPhysicalDisplays()
         screen = nil
         screenIsPortrait = nil
@@ -113,8 +142,7 @@ final class ScreenController {
         }
     }.max()!
 
-    /// 帧率交给 UU远程 自己调，这里只决定上限：实体屏都支持 120Hz（或没接实体屏）就用 120Hz，否则 60Hz。
-    /// 镜像要求两块屏刷新率一致，所以不能超出实体屏支持的范围。
+    /// 虚拟屏刷新率按实体屏能力选择；UU 的传输帧率由远程端单独设置。
     private static func preferredRefreshRate(excluding virtualID: CGDirectDisplayID) -> Double {
         let physical = DisplayConfig.onlineDisplays().filter { $0 != virtualID }
         let supports120 = physical.allSatisfy { display in
@@ -171,7 +199,8 @@ final class ScreenController {
             if retriesLeft > 0 {
                 self.scheduleSync(display: display, size: size, refreshRate: refreshRate, mirroring: mirroring, retriesLeft: retriesLeft - 1, completion: completion)
             } else {
-                self.logger.error("分辨率或镜像未能生效")
+                self.tearDown()
+                self.fail("分辨率或镜像未能生效，已关闭虚拟屏")
             }
         }
     }
